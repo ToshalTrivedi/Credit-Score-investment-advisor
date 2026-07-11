@@ -32,7 +32,7 @@ def generate_users(num_users):
         # --- Deriving a raw weighted score from the signals first ---
         # This raw score is just an internal number before we scale it to 300-900
         raw_score = (
-            (utility_regularity * 0.45) +
+            (utility_regularity * 1.68) +
             (recharge_frequency * 3.5) +
             (ecommerce_frequency * 2.2) +
             (avg_balance / 1000) * 1.8
