@@ -1,108 +1,157 @@
-# This module handles the investment advisor side of the project.
-# It takes a user's answers to a short risk-assessment quiz, combines that
-# with their credit risk bucket (from our scoring model), and suggests
-# suitable investment options in plain language.
+import re
+from sentence_transformers import SentenceTransformer, util
 
-# --- Step 1: Define the risk-assessment questions ---
-# Each question has options, and each option carries a point value.
-# More points = more comfortable with risk.
+print("Loading semantic understanding model... (only happens once)")
+model_nlp = SentenceTransformer('all-MiniLM-L6-v2')
+print("Model loaded.\n")
 
 QUESTIONS = [
     {
         "id": "q1",
-        "question": "How would you feel if your investment value dropped by 10% in a month?",
+        "prompt": "How would you feel if your investment value dropped by 10% in a month?",
         "options": {
-            "a": ("I would panic and want to withdraw immediately", 1),
-            "b": ("I would feel worried but wait and watch", 2),
-            "c": ("I would stay calm, this is normal", 3),
+            "a": ("panic withdraw immediately fear scared", 1),
+            "b": ("worried but wait and watch", 2),
+            "c": ("stay calm this is normal expected", 3),
         }
     },
     {
         "id": "q2",
-        "question": "How long can you keep this money invested without needing it back?",
+        "prompt": "How long can you keep this money invested without needing it back?",
         "options": {
-            "a": ("Less than 1 year", 1),
-            "b": ("1 to 3 years", 2),
-            "c": ("More than 3 years", 3),
+            "a": ("less than a year short term soon", 1),
+            "b": ("one to three years medium term", 2),
+            "c": ("more than three years long term", 3),
         }
     },
     {
         "id": "q3",
-        "question": "Have you ever invested in mutual funds, stocks, or similar before?",
+        "prompt": "Have you ever invested in mutual funds, stocks, or similar before?",
         "options": {
-            "a": ("Never", 1),
-            "b": ("A little, I'm still learning", 2),
-            "c": ("Yes, I'm fairly comfortable with it", 3),
+            "a": ("never invested no experience completely new beginner", 1),
+            "b": ("little experience still learning some exposure", 2),
+            "c": ("yes experienced comfortable have invested before", 3),
         }
     },
     {
         "id": "q4",
-        "question": "How stable is your monthly income right now?",
+        "prompt": "What is your monthly income, and how stable is it?",
         "options": {
-            "a": ("Irregular or unpredictable", 1),
-            "b": ("Mostly stable, some months vary", 2),
-            "c": ("Very stable every month", 3),
+            "a": ("low irregular unpredictable income", 1),
+            "b": ("moderate mostly stable some variation income", 2),
+            "c": ("high very stable reliable income", 3),
         }
     },
     {
         "id": "q5",
-        "question": "What is your main goal with this money?",
+        "prompt": "What is your main goal with this money - safety or growth?",
         "options": {
-            "a": ("Keep it safe, growth is secondary", 1),
-            "b": ("Balanced - some safety, some growth", 2),
-            "c": ("Maximize growth, I can handle ups and downs", 3),
+            "a": ("keep money completely safe growth not important", 1),
+            "b": ("balance between safety and some growth", 2),
+            "c": ("maximize growth handle ups and downs", 3),
         }
     },
 ]
 
+# --- RULE LAYER: catches obvious, unambiguous cases before ML even runs ---
+# This directly fixes negation confusion (yes vs never) and number detection
 
-def calculate_risk_appetite(answers):
-    """
-    answers: a dictionary like {"q1": "b", "q2": "c", "q3": "a", "q4": "b", "q5": "c"}
-    Returns the total score and a risk appetite category.
-    """
-    total_score = 0
+NEGATIVE_EXPERIENCE_PATTERNS = [r"\bnever\b", r"\bno\b.*\binvest", r"not invested", r"never invested"]
+POSITIVE_EXPERIENCE_PATTERNS = [r"\byes\b", r"i have invested", r"i've invested", r"i did invest"]
 
-    for question in QUESTIONS:
-        q_id = question["id"]
-        selected_option = answers.get(q_id)
+PANIC_PATTERNS = [r"\bpanic\b", r"withdraw", r"pull out", r"freak", r"scared"]
+CALM_PATTERNS = [r"\bcalm\b", r"fine", r"normal", r"not worried", r"no problem"]
 
-        if selected_option and selected_option in question["options"]:
-            _, points = question["options"][selected_option]
-            total_score += points
 
-    # Max possible score with 5 questions is 15, min is 5
+def check_rules(question_id, text):
+    """Fast, explicit checks for unambiguous phrasing. Returns points or None if no rule fires."""
+    text_lower = text.lower()
+
+    if question_id == "q3":
+        for pattern in NEGATIVE_EXPERIENCE_PATTERNS:
+            if re.search(pattern, text_lower):
+                return 1
+        for pattern in POSITIVE_EXPERIENCE_PATTERNS:
+            if re.search(pattern, text_lower):
+                # "yes but lost money" still counts as real experience - points stay at 3,
+                # the loss itself doesn't erase that they've actually invested before
+                return 3
+
+    if question_id == "q1":
+        for pattern in PANIC_PATTERNS:
+            if re.search(pattern, text_lower):
+                return 1
+        for pattern in CALM_PATTERNS:
+            if re.search(pattern, text_lower):
+                return 3
+
+    return None
+
+
+def extract_income_number(text):
+    numbers = re.findall(r"\d+", text.replace(",", ""))
+    return int(numbers[0]) if numbers else None
+
+
+def semantic_score(user_text, options):
+    user_embedding = model_nlp.encode(user_text, convert_to_tensor=True)
+    best_option = None
+    best_similarity = -1
+
+    for option_key, (option_text, points) in options.items():
+        option_embedding = model_nlp.encode(option_text, convert_to_tensor=True)
+        similarity = util.cos_sim(user_embedding, option_embedding).item()
+        if similarity > best_similarity:
+            best_similarity = similarity
+            best_option = (option_key, points, option_text)
+
+    return best_option, best_similarity
+
+
+def interpret_answer(question, user_text):
+    q_id = question["id"]
+
+    # Income question relies primarily on the actual number, not semantic guessing
+    if q_id == "q4":
+        amount = extract_income_number(user_text)
+        if amount is not None:
+            if amount < 15000:
+                points = 1
+            elif amount < 40000:
+                points = 2
+            else:
+                points = 3
+            return points, f"(detected income: ₹{amount})"
+
+    # Try the fast rule layer first
+    rule_result = check_rules(q_id, user_text)
+    if rule_result is not None:
+        return rule_result, "(matched by rule-based pattern)"
+
+    # Fall back to ML semantic matching only when rules don't catch it
+    matched_option, similarity = semantic_score(user_text, question["options"])
+    option_key, points, option_text = matched_option
+    return points, f"(ML semantic match, confidence: {similarity:.2f})"
+
+
+def calculate_risk_appetite(total_score):
     if total_score <= 8:
-        risk_appetite = "Conservative"
+        return "Conservative"
     elif total_score <= 11:
-        risk_appetite = "Moderate"
+        return "Moderate"
     else:
-        risk_appetite = "Aggressive"
-
-    return total_score, risk_appetite
+        return "Aggressive"
 
 
 def get_investment_recommendation(risk_appetite, credit_risk_bucket):
-    """
-    Combines the user's risk appetite (from the quiz) with their
-    credit risk bucket (from our scoring model) to suggest instruments.
-    This is the core "prove it, then grow it" logic - someone with a
-    Poor credit bucket gets nudged toward safer options first, regardless
-    of what the quiz alone suggests, since they're still building trust.
-    """
-
-    # Base recommendations purely from risk appetite
     base_recommendations = {
         "Conservative": ["Recurring Deposits (RD)", "Debt Mutual Funds", "Fixed Deposits (FD)"],
         "Moderate": ["Hybrid Mutual Funds", "Index Funds", "Micro SIPs (₹250-₹500/month)"],
         "Aggressive": ["Equity Mutual Funds", "Index Funds", "Diversified Stock SIPs"],
     }
-
     instruments = base_recommendations[risk_appetite]
 
-    # Overriding/adjusting based on credit bucket - this is our unique layer
     if credit_risk_bucket in ["Poor", "Fair"]:
-        # Regardless of quiz answers, nudge toward safer entry-level instruments first
         instruments = ["Recurring Deposits (RD)", "Micro SIPs (₹250/month)", "Debt Mutual Funds"]
         note = (
             f"Since your current credit score bucket is '{credit_risk_bucket}', we recommend "
@@ -124,30 +173,31 @@ def get_investment_recommendation(risk_appetite, credit_risk_bucket):
     }
 
 
-# --- Quick test when running this file directly ---
-if __name__ == "__main__":
-    sample_answers = {
-        "q1": "b",
-        "q2": "c",
-        "q3": "a",
-        "q4": "b",
-        "q5": "c"
-    }
+def run_interactive_quiz():
+    print("=== Risk Profiling Assessment (Hybrid NLP + ML) ===")
+    print("Answer naturally, in your own words.\n")
 
-    score, appetite = calculate_risk_appetite(sample_answers)
-    print(f"Total score: {score}")
+    total_score = 0
+    for question in QUESTIONS:
+        print(f"Q: {question['prompt']}")
+        user_input = input("Your answer: ")
+        points, detail = interpret_answer(question, user_input)
+        print(f"  → Interpreted score: {points}/3 {detail}\n")
+        total_score += points
+
+    return total_score
+
+
+if __name__ == "__main__":
+    total_score = run_interactive_quiz()
+    appetite = calculate_risk_appetite(total_score)
+
+    print(f"\nTotal score: {total_score}")
     print(f"Risk appetite: {appetite}")
 
-    # Testing with a Poor credit bucket to see the override logic in action
-    recommendation = get_investment_recommendation(appetite, "Poor")
-    print("\n--- Recommendation (Poor credit bucket) ---")
+    sample_credit_bucket = "Fair"
+    recommendation = get_investment_recommendation(appetite, sample_credit_bucket)
+
+    print("\n--- Your Investment Recommendation ---")
     for key, value in recommendation.items():
         print(f"{key}: {value}")
-
-    # Testing with an Excellent credit bucket for comparison
-    recommendation2 = get_investment_recommendation(appetite, "Excellent")
-    print("\n--- Recommendation (Excellent credit bucket) ---")
-    for key, value in recommendation2.items():
-        print(f"{key}: {value}")
-
-
