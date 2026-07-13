@@ -4,3 +4,5 @@ __pycache__/
 venv/
 backend/advisor/test_accuracy.py
 backend/advisor/risk_profile.py
+backend/advisor/risk_profile.py
+backend/advisor/test_accuracy.py
