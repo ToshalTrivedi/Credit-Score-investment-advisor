@@ -1,5 +1,46 @@
-import ollama
+import os
+import sys
 import re
+import ollama
+import joblib
+import pandas as pd
+
+# --- Loading the trained credit scoring model ---
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "scoring"))
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SCORING_DIR = os.path.join(BASE_DIR, "..", "scoring")
+
+credit_model = joblib.load(os.path.join(SCORING_DIR, "credit_model.pkl"))
+label_encoder = joblib.load(os.path.join(SCORING_DIR, "label_encoder.pkl"))
+
+CREDIT_FEATURE_COLUMNS = [
+    "recharge_frequency",
+    "utility_regularity",
+    "ecommerce_frequency",
+    "ecommerce_avg_amount",
+    "avg_balance"
+]
+
+
+def get_real_credit_bucket(user_financial_data):
+    """
+    Takes the user's actual financial habit data and runs it through our
+    trained credit scoring model to get their real risk bucket.
+    """
+    input_df = pd.DataFrame([[
+        user_financial_data["recharge_frequency"],
+        user_financial_data["utility_regularity"],
+        user_financial_data["ecommerce_frequency"],
+        user_financial_data["ecommerce_avg_amount"],
+        user_financial_data["avg_balance"]
+    ]], columns=CREDIT_FEATURE_COLUMNS)
+
+    predicted_class = credit_model.predict(input_df)[0]
+    predicted_label = label_encoder.inverse_transform([predicted_class])[0]
+
+    return predicted_label
+
 
 RECOMMENDATION_SYSTEM_PROMPT = """
 You are a financial education assistant for underserved and first-time investors in India.
@@ -21,7 +62,7 @@ STRICT RULES YOU MUST FOLLOW:
 - NEVER name a specific real company, stock ticker, IPO, or fund house
 - NEVER guarantee returns or use words like "definitely will grow" or "guaranteed profit"
 - ALWAYS end your response with exactly this line on its own:
- 
+  "Disclaimer: This is for educational purposes only and does not constitute regulated financial advice."
 - Do not answer anything unrelated to this task. Stay strictly in this role.
 """
 
@@ -34,9 +75,6 @@ QUESTIONS = [
 ]
 
 # --- RULE-BASED SCORING LAYER ---
-# This replaces the Ollama scoring step entirely - it's fast, accurate,
-# and fully explainable, avoiding the small-model hedging problem we saw
-# (where Ollama defaulted to "2" too often, even reversing "panic" to a 3).
 
 NEGATIVE_EXPERIENCE_PATTERNS = [r"\bnever\b", r"\bno\b.*\binvest", r"not invested", r"never invested", r"have not"]
 POSITIVE_EXPERIENCE_PATTERNS = [r"\byes\b", r"i have invested", r"i've invested", r"i did invest", r"gained profit"]
@@ -64,7 +102,7 @@ def score_q1(answer):
         return 3
     if match_any(answer, NERVOUS_PATTERNS):
         return 2
-    return 2  # neutral fallback
+    return 2
 
 
 def score_q2(answer):
@@ -87,7 +125,7 @@ def score_q4(answer):
     numbers = re.findall(r"\d+", answer.replace(",", ""))
     if numbers:
         income = int(numbers[0])
-        if income < 15000:
+        if income <= 15000:
             return 1
         elif income < 50000:
             return 2
@@ -142,7 +180,6 @@ def get_income_tier(income_value):
 
 
 def generate_personalized_recommendation(answers_dict, risk_appetite, credit_bucket):
-    """Ollama is used ONLY here - for natural language generation, not scoring."""
     income_value = extract_income(answers_dict)
     income_tier = get_income_tier(income_value)
 
@@ -184,7 +221,7 @@ def validate_recommendation(text, income_value):
 
 
 def run_interactive_quiz():
-    print("=== Nivesh Mitra Your -Personal Investment Guide ===\n")
+    print("=== Nivesh Mitra - Your Personal Investment Guide ===\n")
     total_score = 0
     answers_dict = {}
 
@@ -202,15 +239,32 @@ def run_interactive_quiz():
     print(f"\nTotal score: {total_score}")
     print(f"Risk appetite: {appetite}")
 
-    sample_credit_bucket = "Good"
+    print("\nNow let's calculate your real credit score based on your financial habits.\n")
 
-    print("\nGenerating your personalized recommendation...\n")
-    recommendation_text, income_value = generate_personalized_recommendation(answers_dict, appetite, sample_credit_bucket)
+    recharge_frequency = float(input("How many times do you recharge your mobile per month? "))
+    utility_regularity = float(input("What percentage of utility bills do you pay on time? (0-100) "))
+    ecommerce_frequency = float(input("How many online shopping transactions do you make per month? "))
+    ecommerce_avg_amount = float(input("What's your average online transaction amount (in ₹)? "))
+    avg_balance = float(input("What's your average bank balance (in ₹)? "))
+
+    user_financial_data = {
+        "recharge_frequency": recharge_frequency,
+        "utility_regularity": utility_regularity,
+        "ecommerce_frequency": ecommerce_frequency,
+        "ecommerce_avg_amount": ecommerce_avg_amount,
+        "avg_balance": avg_balance
+    }
+
+    real_credit_bucket = get_real_credit_bucket(user_financial_data)
+    print(f"\nYour real credit score bucket: {real_credit_bucket}\n")
+
+    print("Generating your personalized recommendation...\n")
+    recommendation_text, income_value = generate_personalized_recommendation(answers_dict, appetite, real_credit_bucket)
 
     if not validate_recommendation(recommendation_text, income_value):
-        print("Warning: AI may have misreported the income figure. Please verify manually.\n")
+        print(" Warning: AI may have misreported the income figure. Please verify manually.\n")
 
-    print("--- Your Personalized Recommendation ---")
+    print("--- Nivesh Mitra says ---")
     print(recommendation_text)
 
     return total_score, appetite, recommendation_text
@@ -219,3 +273,5 @@ def run_interactive_quiz():
 if __name__ == "__main__":
     run_interactive_quiz()
 
+
+    
