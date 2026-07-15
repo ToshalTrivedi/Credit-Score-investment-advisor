@@ -5,6 +5,8 @@ import ollama
 import joblib
 import pandas as pd
 
+from growth_projection import generate_growth_projection, print_projection_summary
+
 # --- Loading the trained credit scoring model ---
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "scoring"))
 
@@ -40,6 +42,29 @@ def get_real_credit_bucket(user_financial_data):
     predicted_label = label_encoder.inverse_transform([predicted_class])[0]
 
     return predicted_label
+
+
+def interpret_utility_regularity(answer):
+    """
+    Converts a natural, everyday answer about bill payment habits into
+    a percentage the credit model can understand - instead of forcing
+    the user to think in numbers themselves.
+    """
+    answer_lower = answer.lower().strip()
+
+    if "always" in answer_lower or "every time" in answer_lower:
+        return 95.0
+    elif "mostly" in answer_lower or "usually" in answer_lower or "often" in answer_lower:
+        return 80.0
+    elif "sometimes" in answer_lower or "occasionally" in answer_lower:
+        return 55.0
+    elif "rarely" in answer_lower or "never" in answer_lower or "hardly" in answer_lower:
+        return 30.0
+    else:
+        numbers = re.findall(r"\d+", answer)
+        if numbers:
+            return float(numbers[0])
+        return 60.0
 
 
 RECOMMENDATION_SYSTEM_PROMPT = """
@@ -220,6 +245,75 @@ def validate_recommendation(text, income_value):
     return True
 
 
+def suggest_monthly_investment(income_value, risk_appetite):
+    """
+    Suggests a realistic MICRO-investment amount, strictly within the
+    ₹500-₹5,000/month range this project targets (per the problem statement,
+    this is specifically for small-ticket investing for underserved users -
+    NOT a general wealth management calculator for any income level).
+    """
+    MIN_AMOUNT = 500
+    MAX_AMOUNT = 5000
+
+    if income_value <= 0:
+        defaults = {"Conservative": 500, "Moderate": 1500, "Aggressive": 2500}
+        return defaults.get(risk_appetite, 500)
+
+    if income_value < 15000:
+        percentage = 0.03
+    elif income_value < 50000:
+        percentage = 0.06
+    else:
+        percentage = 0.08
+
+    suggested_amount = income_value * percentage
+
+    # HARD CAP - never suggest outside our project's actual micro-investment scope
+    suggested_amount = max(MIN_AMOUNT, min(MAX_AMOUNT, suggested_amount))
+    suggested_amount = round(suggested_amount / 50) * 50
+
+    return suggested_amount
+
+
+def process_full_recommendation(quiz_answers, financial_data):
+    """
+    Non-interactive version of the full flow - takes data directly
+    (instead of asking via input()) so it can be called from an API.
+
+    quiz_answers: dict like {"q1": "...", "q2": "...", "q3": "...", "q4": "...", "q5": "..."}
+    financial_data: dict like {"recharge_frequency": 10, "utility_regularity": 85, ...}
+    """
+    total_score = 0
+    for question in QUESTIONS:
+        q_id = question["id"]
+        answer = quiz_answers.get(q_id, "")
+        score = score_answer(q_id, answer)
+        total_score += score
+
+    appetite = calculate_risk_appetite(total_score)
+
+    real_credit_bucket = get_real_credit_bucket(financial_data)
+
+    recommendation_text, income_value = generate_personalized_recommendation(
+        quiz_answers, appetite, real_credit_bucket
+    )
+
+    is_valid = validate_recommendation(recommendation_text, income_value)
+
+    suggested_amount = suggest_monthly_investment(income_value, appetite)
+    projection = generate_growth_projection(appetite, monthly_amount=suggested_amount)
+
+    return {
+        "total_score": total_score,
+        "risk_appetite": appetite,
+        "credit_risk_bucket": real_credit_bucket,
+        "recommendation_text": recommendation_text,
+        "recommendation_validated": is_valid,
+        "suggested_monthly_investment": suggested_amount,
+        "growth_projection": projection,
+    }
+
+
 def run_interactive_quiz():
     print("=== Nivesh Mitra - Your Personal Investment Guide ===\n")
     total_score = 0
@@ -241,11 +335,14 @@ def run_interactive_quiz():
 
     print("\nNow let's calculate your real credit score based on your financial habits.\n")
 
-    recharge_frequency = float(input("How many times do you recharge your mobile per month? "))
-    utility_regularity = float(input("What percentage of utility bills do you pay on time? (0-100) "))
-    ecommerce_frequency = float(input("How many online shopping transactions do you make per month? "))
-    ecommerce_avg_amount = float(input("What's your average online transaction amount (in ₹)? "))
-    avg_balance = float(input("What's your average bank balance (in ₹)? "))
+    recharge_frequency = float(input("How many times do you usually recharge your mobile in a month? "))
+
+    utility_answer = input("Do you pay your electricity/water/gas bills on time? (always / mostly / sometimes / rarely) ")
+    utility_regularity = interpret_utility_regularity(utility_answer)
+
+    ecommerce_frequency = float(input("How many times do you shop online in a typical month? "))
+    ecommerce_avg_amount = float(input("On average, how much do you usually spend per online purchase (in ₹)? "))
+    avg_balance = float(input("Roughly, how much money do you usually keep in your bank account (in ₹)? "))
 
     user_financial_data = {
         "recharge_frequency": recharge_frequency,
@@ -262,16 +359,22 @@ def run_interactive_quiz():
     recommendation_text, income_value = generate_personalized_recommendation(answers_dict, appetite, real_credit_bucket)
 
     if not validate_recommendation(recommendation_text, income_value):
-        print(" Warning: AI may have misreported the income figure. Please verify manually.\n")
+        print("⚠️ Warning: AI may have misreported the income figure. Please verify manually.\n")
 
     print("--- Nivesh Mitra says ---")
     print(recommendation_text)
 
-    return total_score, appetite, recommendation_text
+    suggested_amount = suggest_monthly_investment(income_value, appetite)
+
+    print(f"\nBased on your income, we suggest starting with ₹{suggested_amount}/month.")
+    print("Here's how that could grow over time:\n")
+
+    projection = generate_growth_projection(appetite, monthly_amount=suggested_amount)
+    print_projection_summary(projection)
+
+    return total_score, appetite, recommendation_text, projection
 
 
 if __name__ == "__main__":
     run_interactive_quiz()
 
-
-    
