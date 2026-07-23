@@ -44,12 +44,11 @@ def get_real_credit_bucket(user_financial_data):
     return predicted_label
 
 
+# --- Natural language interpreters for financial habit questions ---
+# These let users answer in everyday words instead of forcing exact numbers
+
 def interpret_utility_regularity(answer):
-    """
-    Converts a natural, everyday answer about bill payment habits into
-    a percentage the credit model can understand - instead of forcing
-    the user to think in numbers themselves.
-    """
+    """Converts a natural answer about bill payment habits into a percentage."""
     answer_lower = answer.lower().strip()
 
     if "always" in answer_lower or "every time" in answer_lower:
@@ -65,6 +64,86 @@ def interpret_utility_regularity(answer):
         if numbers:
             return float(numbers[0])
         return 60.0
+
+
+def interpret_recharge_frequency(answer):
+    """Converts natural answers about recharge habits into a number."""
+    answer_lower = answer.lower().strip()
+
+    numbers = re.findall(r"\d+", answer)
+    if numbers:
+        return float(numbers[0])
+
+    if "everyday" in answer_lower or "daily" in answer_lower:
+        return 30.0
+    elif "every week" in answer_lower or "weekly" in answer_lower:
+        return 4.0
+    elif "twice a month" in answer_lower or "couple of times" in answer_lower:
+        return 2.0
+    elif "once a month" in answer_lower or "monthly" in answer_lower:
+        return 1.0
+    elif "rarely" in answer_lower or "hardly" in answer_lower:
+        return 0.5
+    else:
+        return 2.0
+
+
+def interpret_ecommerce_frequency(answer):
+    """Converts natural answers about online shopping frequency into a number."""
+    answer_lower = answer.lower().strip()
+
+    numbers = re.findall(r"\d+", answer)
+    if numbers:
+        return float(numbers[0])
+
+    if "very often" in answer_lower or "a lot" in answer_lower or "frequently" in answer_lower:
+        return 15.0
+    elif "sometimes" in answer_lower or "occasionally" in answer_lower:
+        return 6.0
+    elif "rarely" in answer_lower or "hardly" in answer_lower:
+        return 2.0
+    elif "never" in answer_lower:
+        return 0.0
+    else:
+        return 5.0
+
+
+def interpret_ecommerce_amount(answer):
+    """Converts natural answers about average spend per purchase into a number."""
+    answer_lower = answer.lower().strip()
+
+    numbers = re.findall(r"\d+", answer.replace(",", ""))
+    if numbers:
+        return float(numbers[0])
+
+    if "very little" in answer_lower or "small" in answer_lower or "cheap" in answer_lower:
+        return 300.0
+    elif "moderate" in answer_lower or "average" in answer_lower:
+        return 1000.0
+    elif "a lot" in answer_lower or "expensive" in answer_lower or "high" in answer_lower:
+        return 3000.0
+    else:
+        return 800.0
+
+
+def interpret_avg_balance(answer):
+    """Converts natural answers about typical bank balance into a number."""
+    answer_lower = answer.lower().strip()
+
+    numbers = re.findall(r"\d+", answer.replace(",", ""))
+    if numbers:
+        return float(numbers[0])
+
+    if "very little" in answer_lower or "almost nothing" in answer_lower or "empty" in answer_lower:
+        return 1000.0
+    elif "some" in answer_lower or "a bit" in answer_lower:
+        return 5000.0
+    elif "decent" in answer_lower or "good amount" in answer_lower:
+        return 20000.0
+    elif "a lot" in answer_lower or "high" in answer_lower:
+        return 50000.0
+    else:
+        return 10000.0
 
 
 RECOMMENDATION_SYSTEM_PROMPT = """
@@ -248,9 +327,7 @@ def validate_recommendation(text, income_value):
 def suggest_monthly_investment(income_value, risk_appetite):
     """
     Suggests a realistic MICRO-investment amount, strictly within the
-    ₹500-₹5,000/month range this project targets (per the problem statement,
-    this is specifically for small-ticket investing for underserved users -
-    NOT a general wealth management calculator for any income level).
+    ₹500-₹5,000/month range this project targets.
     """
     MIN_AMOUNT = 500
     MAX_AMOUNT = 5000
@@ -267,8 +344,6 @@ def suggest_monthly_investment(income_value, risk_appetite):
         percentage = 0.08
 
     suggested_amount = income_value * percentage
-
-    # HARD CAP - never suggest outside our project's actual micro-investment scope
     suggested_amount = max(MIN_AMOUNT, min(MAX_AMOUNT, suggested_amount))
     suggested_amount = round(suggested_amount / 50) * 50
 
@@ -279,9 +354,6 @@ def process_full_recommendation(quiz_answers, financial_data):
     """
     Non-interactive version of the full flow - takes data directly
     (instead of asking via input()) so it can be called from an API.
-
-    quiz_answers: dict like {"q1": "...", "q2": "...", "q3": "...", "q4": "...", "q5": "..."}
-    financial_data: dict like {"recharge_frequency": 10, "utility_regularity": 85, ...}
     """
     total_score = 0
     for question in QUESTIONS:
@@ -335,14 +407,20 @@ def run_interactive_quiz():
 
     print("\nNow let's calculate your real credit score based on your financial habits.\n")
 
-    recharge_frequency = float(input("How many times do you usually recharge your mobile in a month? "))
+    recharge_answer = input("How often do you recharge your mobile? (e.g. daily, weekly, once a month, or a number) ")
+    recharge_frequency = interpret_recharge_frequency(recharge_answer)
 
     utility_answer = input("Do you pay your electricity/water/gas bills on time? (always / mostly / sometimes / rarely) ")
     utility_regularity = interpret_utility_regularity(utility_answer)
 
-    ecommerce_frequency = float(input("How many times do you shop online in a typical month? "))
-    ecommerce_avg_amount = float(input("On average, how much do you usually spend per online purchase (in ₹)? "))
-    avg_balance = float(input("Roughly, how much money do you usually keep in your bank account (in ₹)? "))
+    ecommerce_answer = input("How often do you shop online? (e.g. very often, sometimes, rarely, or a number) ")
+    ecommerce_frequency = interpret_ecommerce_frequency(ecommerce_answer)
+
+    ecommerce_amount_answer = input("How much do you usually spend per online purchase? (e.g. small amounts, moderate, a lot, or a number in ₹) ")
+    ecommerce_avg_amount = interpret_ecommerce_amount(ecommerce_amount_answer)
+
+    balance_answer = input("How much money do you usually keep in your bank account? (e.g. very little, some, decent amount, a lot, or a number in ₹) ")
+    avg_balance = interpret_avg_balance(balance_answer)
 
     user_financial_data = {
         "recharge_frequency": recharge_frequency,
@@ -359,7 +437,7 @@ def run_interactive_quiz():
     recommendation_text, income_value = generate_personalized_recommendation(answers_dict, appetite, real_credit_bucket)
 
     if not validate_recommendation(recommendation_text, income_value):
-        print("⚠️ Warning: AI may have misreported the income figure. Please verify manually.\n")
+        print(" Warning: AI may have misreported the income figure. Please verify manually.\n")
 
     print("--- Nivesh Mitra says ---")
     print(recommendation_text)
@@ -377,4 +455,5 @@ def run_interactive_quiz():
 
 if __name__ == "__main__":
     run_interactive_quiz()
+
 
